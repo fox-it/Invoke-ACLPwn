@@ -1,5 +1,4 @@
 # Invoke-ACLpwn
-![License: GPLv2](https://img.shields.io/pypi/l/mitm6.svg)
 
 Invoke-ACLpwn is a tool that automates the discovery and pwnage of ACLs in 
 Active Directory that are unsafe configured. 
