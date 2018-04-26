@@ -3,6 +3,8 @@
 Invoke-ACLpwn is a tool that automates the discovery and pwnage of ACLs in 
 Active Directory that are unsafe configured. 
 
+For background information, read the release blog: https://blog.fox-it.com/2018/04/26/escalating-privileges-with-acls-in-active-directory/
+
 Invoke-ACLpwn is designed to run with integrated credentials as well as 
 with specified network credentials. The script works by creating an export 
 of all ACLs in the domain with SharpHound as well as the group membership of 
