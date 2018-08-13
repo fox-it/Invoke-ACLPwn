@@ -1,3 +1,5 @@
+### Written by Rindert Kramer
+
 ####################
 #
 # Copyright (c) 2018 Fox-IT
@@ -25,7 +27,7 @@
 # thx: https://github.com/NickolajA/PowerShell/blob/master/AzureAD/Set-AADSyncPermissions.ps1
 # thx: https://social.technet.microsoft.com/Forums/ie/en-US/f238d2b0-a1d7-48e8-8a60-542e7ccfa2e8/recursive-retrieval-of-all-ad-group-memberships-of-a-user?forum=ITCG
 # thx: https://raw.githubusercontent.com/canix1/ADACLScanner/master/ADACLScan.ps1
-# https://blogs.msdn.microsoft.com/dsadsi/2013/07/09/setting-active-directory-object-permissions-using-powershell-and-system-directoryservices/
+# thx: https://blogs.msdn.microsoft.com/dsadsi/2013/07/09/setting-active-directory-object-permissions-using-powershell-and-system-directoryservices/
 
 [CmdletBinding()]
 [Alias()]
@@ -1100,9 +1102,10 @@ function Check-Env {
 
     $result = $true
     
-    # Import AD assemblies
+    # Import assemblies
     Add-Type -AssemblyName System.DirectoryServices    
     Add-Type -AssemblyName System.DirectoryServices.AccountManagement 
+    Add-Type -AssemblyName System.IO.Compression.FileSystem
 
     if ($logToFile){
         "$("`r`n")$('='* 120)" | Out-File 'Invoke-ACLPwn.log' -Append
@@ -1367,7 +1370,7 @@ function Get-PwnChain ($objACL, $groupMembership) {
     return $pwnChain
 }
 
-function Import-ACL ($csvLocation) {
+function Import-OldACL ($csvLocation) {
 
     if (-not (Test-Path $csvLocation)) {
         Write-Error ("[Import-ACL] File '{0}' not found." -f $csvLocation)
@@ -1384,11 +1387,13 @@ function Import-ACL ($csvLocation) {
 function Get-SharpHoundACL ([string]$sharpHoundLocation) {
     
     # Run sharphound, dump ACL only
-    $filePrefix = "{0}" -f [datetime]::Now.ToFileTime()
+    #$filePrefix = "{0}" -f [datetime]::Now.ToFileTime()
+    $fileName = "{0}.zip" -f [datetime]::Now.ToFileTime()
     $cmd = "$($sharpHoundLocation)" 
 
 
-    $arg = "-d $($global:ldapConnInfo.domain) -c acl --CSVPrefix $filePrefix --NoSaveCache"
+    #$arg = "-d $($global:ldapConnInfo.domain) -c acl --CSVPrefix $filePrefix --NoSaveCache"
+    $arg = "$($global:ldapConnInfo.domain) -c acl --ZipFileName $($fileName) --NoSaveCache"
 
     Invoke-Cmd -cmd $cmd -argV $arg
 
@@ -1399,7 +1404,7 @@ function Get-SharpHoundACL ([string]$sharpHoundLocation) {
     
     # Sleep a little, check if file exists if we wake up
     Start-Sleep $sleepInterval
-    $file = Get-ChildItem -Filter "$filePrefix*"
+    $file = Get-ChildItem -Filter "$fileName*"
     if ($file -ne $null) {
         return $file[0].FullName
     }
@@ -1429,12 +1434,63 @@ function Get-SharpHoundACL ([string]$sharpHoundLocation) {
     # Check for file with given prefix
     $file = Get-ChildItem -Filter "$filePrefix*"
     if ($file -eq $null) {
-        Write-Error '[Get-SharpHoundACL] No ACL input available.'
+        Write-Error '[Get-SharpHoundACL] No ACL input available. Are you using Sharphound 2.0?'
         return $null
     }
 
     return $file[0].FullName
 }
+
+function Import-ACL ([string]$sharpHoundZipFileLocation){
+
+    # unzip file
+    $fInfo = New-Object System.IO.FileInfo $sharpHoundZipFileLocation
+    $parentFolder = $fInfo.Directory.FullName
+    Unzip-Archive -ziparchive $sharpHoundZipFileLocation -extractpath $parentFolder    
+    $sharpHoundOutputFiles = Get-Childitem -Path $parentFolder -Filter "*.json"
+
+    # Keep track of file that were created. We want to remove these files later
+    $global:filesCreated += $sharpHoundZipFileLocation
+    $sharpHoundOutputFiles.FullName | ForEach-Object {
+        $global:filesCreated += $_
+    }
+    
+    $result = @()
+    foreach ($jsonFile in $sharpHoundOutputFiles){
+
+        $content = Get-Content $jsonFile.FullName
+        $tmp = ConvertFrom-Json $content
+
+        # iterate through objects
+        $objectType = $tmp.meta.type
+        foreach ($i in $tmp."$objectType"){
+            
+            $objectName = $i.Name
+
+            # Iterate through ACEs
+            foreach ($a in $i.Aces) {            
+                $result += New-Object PSObject -Property @{
+                        'ObjectName'            = $objectName
+                        'ObjectType'            = $objectType
+                        'PrincipalName'         = $a.PrincipalName
+                        'PrincipalType'         = $a.PrincipalType
+                        'ActiveDirectoryRights' = $a.RightName
+                        'ACEType'               = $a.AceType
+                        'AccessControlType'     = 'AccessAllowed'               
+                }
+            }
+        }
+    }
+
+    return $result
+}
+
+function Unzip-Archive {
+    #thx: https://www.saotn.org/unzip-file-powershell/
+    param( [string]$ziparchive, [string]$extractpath )
+    [System.IO.Compression.ZipFile]::ExtractToDirectory( $ziparchive, $extractpath )
+}
+
 
 function Add-ReplicationPartner {
     
@@ -1646,11 +1702,11 @@ if ($aclPath -eq $null) {
 }
 
 # Import csv
-$ACL = Import-ACL -csvLocation $aclPath
+$ACL = Import-ACL -sharpHoundZipFileLocation $aclPath
 Write-Status "Found $($ACL.Count) ACLs"
 
 # Iterate writeDACL and fullcontrol permissions on the domain object
-$domainACL       = $ACL | Where-Object {$_.ObjectType -eq 'domain'}
+$domainACL       = $ACL | Where-Object {$_.ObjectType -eq 'domains'}
 $writeDACLDomain = $domainACL | Where-Object {$_.ActiveDirectoryRights -eq 'WriteDacl'}
 $writeDACLDomain += $domainACL | Where-Object {$_.ActiveDirectoryRights -eq 'GenericAll'}
 
