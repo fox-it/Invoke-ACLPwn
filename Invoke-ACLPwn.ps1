@@ -1370,7 +1370,7 @@ function Get-PwnChain ($objACL, $groupMembership) {
     return $pwnChain
 }
 
-function Import-OldACL ($csvLocation) {
+function Import-CSVACL ($csvLocation) {
 
     if (-not (Test-Path $csvLocation)) {
         Write-Error ("[Import-ACL] File '{0}' not found." -f $csvLocation)
@@ -1384,18 +1384,40 @@ function Import-OldACL ($csvLocation) {
     return $r
 }
 
-function Get-SharpHoundACL ([string]$sharpHoundLocation) {
+function Is-NewSharphoundVersion([string]$sharphoundLocation){
+
+    $result = $false
+
+    # Dirty hack to get sharphound version :(
+    $tmpPath = [system.IO.Path]::GetTempPath()
+    Start-process -wait -WindowStyle Hidden -filePath $sharphoundLocation -ArgumentList "-h" -RedirectStandardError "$tmpPath\out2.txt"
+
+    $sharpHoundHelp = Get-Content "$tmpPath\out2.txt"    
+    $sharphoundVersion = ($sharpHoundHelp -split '`r`n')[0]
+    Write-Status "Running $($sharphoundVersion)..." 
+
+    if ($sharphoundVersion.ToLower().Contains("sharphound v2")){
+        $result = $true
+    }
+
+    Remove-Item "$tmpPath\out2.txt"
+    return $result
+}
+
+function Get-SharpHoundACL ([string]$sharpHoundLocation, $isNewVersion) {
     
-    # Run sharphound, dump ACL only
-    #$filePrefix = "{0}" -f [datetime]::Now.ToFileTime()
-    $fileName = "{0}.zip" -f [datetime]::Now.ToFileTime()
-    $cmd = "$($sharpHoundLocation)" 
+    $fileName = [string]::Empty
+    $arg = [string]::Empty
 
+    if ($isNewVersion){
+        $fileName = "{0}.zip" -f [datetime]::Now.ToFileTime()
+        $arg = "$($global:ldapConnInfo.domain) -c acl --ZipFileName $($fileName) --NoSaveCache"
+    } else {
+        $fileName = "{0}" -f [datetime]::Now.ToFileTime()
+        $arg = "-d $($global:ldapConnInfo.domain) -c acl --CSVPrefix $($fileName) --NoSaveCache"
+    }
 
-    #$arg = "-d $($global:ldapConnInfo.domain) -c acl --CSVPrefix $filePrefix --NoSaveCache"
-    $arg = "$($global:ldapConnInfo.domain) -c acl --ZipFileName $($fileName) --NoSaveCache"
-
-    Invoke-Cmd -cmd $cmd -argV $arg
+    Invoke-Cmd -cmd $sharpHoundLocation -argV $arg
 
     $stillRuns     = $true
     $maxSleepTime  = 10 # In minutes 
@@ -1432,16 +1454,16 @@ function Get-SharpHoundACL ([string]$sharpHoundLocation) {
     }while ($stillRuns)
     
     # Check for file with given prefix
-    $file = Get-ChildItem -Filter "$filePrefix*"
+    $file = Get-ChildItem -Filter "$fileName*"
     if ($file -eq $null) {
-        Write-Error '[Get-SharpHoundACL] No ACL input available. Are you using Sharphound 2.0?'
+        Write-Error '[Get-SharpHoundACL] No ACL input available.'
         return $null
     }
 
     return $file[0].FullName
 }
 
-function Import-ACL ([string]$sharpHoundZipFileLocation){
+function Import-JsonACL ([string]$sharpHoundZipFileLocation){
 
     # unzip file
     $fInfo = New-Object System.IO.FileInfo $sharpHoundZipFileLocation
@@ -1458,8 +1480,13 @@ function Import-ACL ([string]$sharpHoundZipFileLocation){
     $result = @()
     foreach ($jsonFile in $sharpHoundOutputFiles){
 
-        $content = Get-Content $jsonFile.FullName
-        $tmp = ConvertFrom-Json $content
+        $content = Get-Content $jsonFile.FullName        
+
+        if ([string]::IsNullOrEmpty($content)){
+            continue
+        }
+
+        $tmp = ConvertFrom-Json $content -ErrorAction SilentlyContinue
 
         # iterate through objects
         $objectType = $tmp.meta.type
@@ -1693,20 +1720,29 @@ $global:ADInfo.extendedRights = Get-ExtendedRights
 Write-Status "Found $($global:ADInfo.extendedRights.Count) extended rights"
 
 # Run Sharphound to collect ACL of the target domain
-Write-Status 'Running Sharphound...'
-$aclPath = Get-SharpHoundACL -sharpHoundLocation $sharpHoundLocation
+$isnewSharpHoundVersion = Is-NewSharphoundVersion -sharphoundLocation $SharpHoundLocation
+$aclInputPath = Get-SharpHoundACL -sharpHoundLocation $sharpHoundLocation  -isNewVersion $isnewSharpHoundVersion
 $global:filesCreated += $aclPath
 
-if ($aclPath -eq $null) {
+if ($aclInputPath -eq $null) {
     return
 }
 
 # Import csv
-$ACL = Import-ACL -sharpHoundZipFileLocation $aclPath
+if ($isnewSharpHoundVersion){
+    $ACL = Import-JsonACL -sharpHoundZipFileLocation $aclInputPath
+} else{
+    $ACL = Import-CSVACL -csvLocation $aclInputPath
+}
 Write-Status "Found $($ACL.Count) ACLs"
 
 # Iterate writeDACL and fullcontrol permissions on the domain object
-$domainACL       = $ACL | Where-Object {$_.ObjectType -eq 'domains'}
+$domainObjectTypeName = "domain"
+if ($isnewSharpHoundVersion) {
+    $domainObjectTypeName = "domains" # dunno if typo?
+}
+
+$domainACL       = $ACL | Where-Object {$_.ObjectType -eq $domainObjectTypeName}
 $writeDACLDomain = $domainACL | Where-Object {$_.ActiveDirectoryRights -eq 'WriteDacl'}
 $writeDACLDomain += $domainACL | Where-Object {$_.ActiveDirectoryRights -eq 'GenericAll'}
 
