@@ -1433,7 +1433,7 @@ function Get-SharpHoundACL ([string]$sharpHoundLocation, $isNewVersion) {
 
     do {
         # check if sharphound is still running
-        $p = Get-Process '*SharpHound.exe'
+        $p = Get-Process '*SharpHound'
         if ($p -eq $null) {
             $stillRuns = $false
         } else {
