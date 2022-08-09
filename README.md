@@ -22,7 +22,10 @@ a "chain" that leads to domain administrative privilges in the target domain.
 No installation is needed, however, in order to run Invoke-ACLpwn, a few
 depedencies must be met:
 * `.NET 3.5` or later
-* `sharphound.exe`
+* `sharphound.exe 3.0.0.0`
+* `Mimikatz.exe 2.2.0` 
+
+* Tested on: Windows 10.0 Build 14393
 * If you want to run DCsync, you need `mimikatz.exe` as well.
 
 ## Usage
